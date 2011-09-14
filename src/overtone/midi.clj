@@ -1,36 +1,36 @@
-(ns midi
+(ns overtone.midi
   #^{:author "Jeff Rose"
      :doc "A higher-level API on top of the Java MIDI apis.  It makes it
            easier to configure midi input/output devices, route between devices,
            read/write control messages to devices, play notes, etc."}
-  (:import 
+  (:import
      (java.util.regex Pattern)
      (javax.sound.midi Sequencer Synthesizer
-                       MidiSystem MidiDevice Receiver Transmitter MidiEvent 
+                       MidiSystem MidiDevice Receiver Transmitter MidiEvent
                        MidiMessage ShortMessage SysexMessage
                        InvalidMidiDataException MidiUnavailableException)
-     (javax.swing JFrame JScrollPane JList 
+     (javax.swing JFrame JScrollPane JList
                   DefaultListModel ListSelectionModel)
      (java.awt.event MouseAdapter)
      (java.util.concurrent FutureTask ScheduledThreadPoolExecutor TimeUnit))
   (:use clojure.set))
 
 (def NUM-PLAYER-THREADS 10)
-(def *midi-player-pool* (ScheduledThreadPoolExecutor. NUM-PLAYER-THREADS))
+(def midi-player-pool (ScheduledThreadPoolExecutor. NUM-PLAYER-THREADS))
 
 (defn- now []
   (System/currentTimeMillis))
 
-(defn- schedule 
+(defn- schedule
   "Schedules fun to be executed after ms-delay milliseconds."
   [fun ms-delay]
-  (.schedule *midi-player-pool* fun (long ms-delay) TimeUnit/MILLISECONDS))
+  (.schedule midi-player-pool fun (long ms-delay) TimeUnit/MILLISECONDS))
 
 (defn midi-devices []
   "Get all of the currently available midi devices."
   (for [info (MidiSystem/getMidiDeviceInfo)]
     (let [device (MidiSystem/getMidiDevice info)]
-      (with-meta 
+      (with-meta
         {:name         (.getName info)
          :description  (.getDescription info)
          :vendor       (.getVendor info)
@@ -41,12 +41,12 @@
          :device       device}
         {:type :midi-device}))))
 
-(defn midi-device? 
+(defn midi-device?
   "Check whether obj is a midi device."
   [obj]
   (= :midi-device (type obj)))
 
-(defn midi-ports 
+(defn midi-ports
   "Get the available midi I/O ports (hardware sound-card and virtual ports)."
   []
   (filter #(and (not (instance? Sequencer   (:device %1)))
@@ -59,23 +59,23 @@
   "Get the midi input sources."
   (filter #(not (zero? (:sources %1))) (midi-ports)))
 
-(defn midi-sinks 
+(defn midi-sinks
   "Get the midi output sinks."
   []
   (filter #(not (zero? (:sinks %1))) (midi-ports)))
 
-(defn midi-find-device 
+(defn midi-find-device
   "Takes a set of devices returned from either (midi-sources) or (midi-sinks), and a
   search string.  Returns the first device where either the name or description
   mathes using the search string as a regexp."
   [devs dev-name]
-  (first (filter 
+  (first (filter
            #(let [pat (Pattern/compile dev-name Pattern/CASE_INSENSITIVE)]
-              (or (re-find pat (:name %1)) 
+              (or (re-find pat (:name %1))
                   (re-find pat (:description %1))))
            devs)))
 
-(defn- list-model 
+(defn- list-model
   "Create a swing list model based on a collection."
   [items]
   (let [model (DefaultListModel.)]
@@ -83,33 +83,33 @@
       (.addElement model item))
     model))
 
-(defn midi-port-chooser 
+(defn midi-port-chooser
   "Brings up a GUI list of the provided midi ports and then calls handler with the port
   that was double clicked."
   [title ports]
   (let [frame   (JFrame. title)
-        model   (list-model (for [port ports] 
+        model   (list-model (for [port ports]
                               (str (:name port) " - " (:description port))))
         options (JList. model)
         pane    (JScrollPane. options)
         future-val (FutureTask. #(nth ports (.getSelectedIndex options)))
         listener (proxy [MouseAdapter] []
-                   (mouseClicked 
-                     [event] 
+                   (mouseClicked
+                     [event]
                      (if (= (.getClickCount event) 2)
                        (.setVisible frame false)
                        (.run future-val))))]
     (doto options
       (.addMouseListener listener)
       (.setSelectionMode ListSelectionModel/SINGLE_SELECTION))
-    (doto frame 
-      (.add pane) 
-      (.pack) 
+    (doto frame
+      (.add pane)
+      (.pack)
       (.setSize 400 600)
       (.setVisible true))
     future-val))
 
-(defn- with-receiver 
+(defn- with-receiver
   "Add a midi receiver to the sink device info."
   [sink-info]
   (let [dev (:device sink-info)]
@@ -117,7 +117,7 @@
       (.open dev))
     (assoc sink-info :receiver (.getReceiver dev))))
 
-(defn- with-transmitter 
+(defn- with-transmitter
   "Add a midi transmitter to the source info."
   [source-info]
   (let [dev (:device source-info)]
@@ -125,25 +125,25 @@
       (.open dev))
     (assoc source-info :transmitter (.getTransmitter dev))))
 
-(defn midi-in 
+(defn midi-in
   "Open a midi input device for reading.  If no argument is given then
   a selection list pops up to let you browse and select the midi device."
   ([] (with-transmitter
         (.get (midi-port-chooser "Midi Input Selector" (midi-sources)))))
-  ([in] 
+  ([in]
    (let [source (cond
                   (string? in) (midi-find-device (midi-sources) in)
                   (midi-device? in) in)]
      (if source
        (with-transmitter source)
-       (do 
+       (do
          (println "Did not find a matching midi input device for: " in)
          nil)))))
 
-(defn midi-out 
+(defn midi-out
   "Open a midi output device for writing.  If no argument is given then
   a selection list pops up to let you browse and select the midi device."
-  ([] (with-receiver 
+  ([] (with-receiver
         (.get (midi-port-chooser "Midi Output Selector" (midi-sinks)))))
 
   ([out] (let [sink (cond
@@ -151,17 +151,17 @@
                       (midi-device? out) out)]
            (if sink
              (with-receiver sink)
-             (do 
+             (do
                (println "Did not find a matching midi output device for: " out)
                nil)))))
 
-(defn midi-route 
+(defn midi-route
   "Route midi messages from a source to a sink.  Expects transmitter and receiver objects
   returned from midi-in and midi-out."
   [source sink]
   (.setReceiver (:transmitter source) (:receiver sink)))
 
-(def midi-shortmessage-status 
+(def midi-shortmessage-status
   {ShortMessage/ACTIVE_SENSING :active-sensing
    ShortMessage/CONTINUE :continue
    ShortMessage/END_OF_EXCLUSIVE :end-of-exclusive
@@ -174,11 +174,11 @@
    ShortMessage/TIMING_CLOCK :timing-clock
    ShortMessage/TUNE_REQUEST :tune-request})
 
-(def midi-sysexmessage-status 
+(def midi-sysexmessage-status
   {SysexMessage/SYSTEM_EXCLUSIVE :system-exclusive
    SysexMessage/SPECIAL_SYSTEM_EXCLUSIVE :special-system-exclusive})
 
-(def midi-shortmessage-command 
+(def midi-shortmessage-command
   {ShortMessage/CHANNEL_PRESSURE :channel-pressure
    ShortMessage/CONTROL_CHANGE :control-change
    ShortMessage/NOTE_OFF :note-off
@@ -187,7 +187,7 @@
    ShortMessage/POLY_PRESSURE :poly-pressure
    ShortMessage/PROGRAM_CHANGE :program-change})
 
-(defn midi-msg 
+(defn midi-msg
   "Make a clojure map out of a midi object."
   [obj]
   {:chan (.getChannel obj)
@@ -198,7 +198,7 @@
    :data2 (.getData2 obj)
    })
 
-(defn midi-handle-events 
+(defn midi-handle-events
   "Specify a single handler that will receive all midi events from the input device."
   [input fun]
   (let [receiver (proxy [Receiver] []
@@ -208,21 +208,21 @@
 
 ;; NOTE: Unfortunately, it seems that either Pianoteq or the virmidi modules
 ;; don't actually make use of the timestamp...
-(defn midi-note-on 
+(defn midi-note-on
   "Send a midi on msg to the sink."
-  [sink note-num vel & [timestamp]] 
+  [sink note-num vel & [timestamp]]
   (let [on-msg  (ShortMessage.)]
     (.setMessage on-msg ShortMessage/NOTE_ON 0 note-num vel)
     (.send (:receiver sink) on-msg -1)))
 
-(defn midi-note-off 
+(defn midi-note-off
   "Send a midi off msg to the sink."
   [sink note-num]
   (let [off-msg (ShortMessage.)]
     (.setMessage off-msg ShortMessage/NOTE_OFF 0 note-num 0)
     (.send (:receiver sink) off-msg -1)))
 
-(defn- byte-seq-to-array 
+(defn- byte-seq-to-array
   "Turn a seq of bytes into a native byte-array."
   [bseq]
   (let [ary (byte-array (count bseq))]
@@ -238,13 +238,13 @@
     (.setMessage sys-msg bytes (count bytes))
     (.send (:receiver sink) sys-msg -1)))
 
-(defn midi-note 
+(defn midi-note
   "Send a midi on/off msg pair to the sink."
   [sink note-num vel dur]
   (midi-note-on sink note-num vel)
   (schedule #(midi-note-off sink note-num 0) dur))
 
-(defn midi-play 
+(defn midi-play
   "Play a seq of notes with the corresponding velocities and durations."
   [out notes velocities durations]
   (loop [notes notes
@@ -257,4 +257,3 @@
             d (first durations)]
         (schedule #(midi-note out n v d) cur-time)
         (recur (next notes) (next velocities) (next durations) (+ cur-time d))))))
-
