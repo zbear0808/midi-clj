@@ -1,34 +1,28 @@
 (ns overtone.midi
   #^{:author "Jeff Rose"
-     :doc "A higher-level API on top of the Java MIDI apis.  It makes it
-           easier to configure midi input/output devices, route between devices,
-           read/write control messages to devices, play notes, etc."}
+     :doc "A higher-level API on top of the Java MIDI apis.  It makes
+           it easier to configure midi input/output devices, route
+           between devices, read/write control messages to devices,
+           play notes, etc."}
   (:import
      (java.util.regex Pattern)
      (javax.sound.midi Sequencer Synthesizer
                        MidiSystem MidiDevice Receiver Transmitter MidiEvent
                        MidiMessage ShortMessage SysexMessage
-                       InvalidMidiDataException MidiUnavailableException)
+                       InvalidMidiDataException MidiUnavailableException
+                       MidiDevice$Info)
      (javax.swing JFrame JScrollPane JList
                   DefaultListModel ListSelectionModel)
      (java.awt.event MouseAdapter)
      (java.util.concurrent FutureTask ScheduledThreadPoolExecutor TimeUnit))
-  (:use clojure.set))
+  (:use clojure.set)
+  (:require [overtone.at-at :as at-at]))
 
-(def NUM-PLAYER-THREADS 10)
-(def midi-player-pool (ScheduledThreadPoolExecutor. NUM-PLAYER-THREADS))
-
-(defn- now []
-  (System/currentTimeMillis))
-
-(defn- schedule
-  "Schedules fun to be executed after ms-delay milliseconds."
-  [fun ms-delay]
-  (.schedule midi-player-pool fun (long ms-delay) TimeUnit/MILLISECONDS))
+(def midi-player-pool (at-at/mk-pool))
 
 (defn midi-devices []
   "Get all of the currently available midi devices."
-  (for [info (MidiSystem/getMidiDeviceInfo)]
+  (for [^MidiDevice$Info info (MidiSystem/getMidiDeviceInfo)]
     (let [device (MidiSystem/getMidiDevice info)]
       (with-meta
         {:name         (.getName info)
@@ -47,13 +41,12 @@
   (= :midi-device (type obj)))
 
 (defn midi-ports
-  "Get the available midi I/O ports (hardware sound-card and virtual ports)."
+  "Get the available midi I/O ports (hardware sound-card and virtual
+  ports). NOTE: devices use -1 to signify unlimited sources or sinks."
   []
   (filter #(and (not (instance? Sequencer   (:device %1)))
                 (not (instance? Synthesizer (:device %1))))
           (midi-devices)))
-
-;; NOTE: devices use -1 to signify unlimited sources or sinks
 
 (defn midi-sources []
   "Get the midi input sources."
@@ -65,9 +58,10 @@
   (filter #(not (zero? (:sinks %1))) (midi-ports)))
 
 (defn midi-find-device
-  "Takes a set of devices returned from either (midi-sources) or (midi-sinks), and a
-  search string.  Returns the first device where either the name or description
-  mathes using the search string as a regexp."
+  "Takes a set of devices returned from either (midi-sources)
+  or (midi-sinks), and a search string.  Returns the first device
+  where either the name or description matches using the search string
+  as a regexp."
   [devs dev-name]
   (first (filter
            #(let [pat (Pattern/compile dev-name Pattern/CASE_INSENSITIVE)]
@@ -83,9 +77,9 @@
       (.addElement model item))
     model))
 
-(defn midi-port-chooser
-  "Brings up a GUI list of the provided midi ports and then calls handler with the port
-  that was double clicked."
+(defn- midi-port-chooser
+  "Brings up a GUI list of the provided midi ports and then calls
+  handler with the port that was double clicked."
   [title ports]
   (let [frame   (JFrame. title)
         model   (list-model (for [port ports]
@@ -112,7 +106,7 @@
 (defn- with-receiver
   "Add a midi receiver to the sink device info."
   [sink-info]
-  (let [dev (:device sink-info)]
+  (let [^MidiDevice dev (:device sink-info)]
     (if (not (.isOpen dev))
       (.open dev))
     (assoc sink-info :receiver (.getReceiver dev))))
@@ -120,14 +114,15 @@
 (defn- with-transmitter
   "Add a midi transmitter to the source info."
   [source-info]
-  (let [dev (:device source-info)]
+  (let [^MidiDevice dev (:device source-info)]
     (if (not (.isOpen dev))
       (.open dev))
     (assoc source-info :transmitter (.getTransmitter dev))))
 
 (defn midi-in
   "Open a midi input device for reading.  If no argument is given then
-  a selection list pops up to let you browse and select the midi device."
+  a selection list pops up to let you browse and select the midi
+  device."
   ([] (with-transmitter
         (.get (midi-port-chooser "Midi Input Selector" (midi-sources)))))
   ([in]
@@ -141,8 +136,9 @@
          nil)))))
 
 (defn midi-out
-  "Open a midi output device for writing.  If no argument is given then
-  a selection list pops up to let you browse and select the midi device."
+  "Open a midi output device for writing.  If no argument is given
+  then a selection list pops up to let you browse and select the midi
+  device."
   ([] (with-receiver
         (.get (midi-port-chooser "Midi Output Selector" (midi-sinks)))))
 
@@ -154,12 +150,12 @@
              (do
                (println "Did not find a matching midi output device for: " out)
                nil)))))
-
 (defn midi-route
-  "Route midi messages from a source to a sink.  Expects transmitter and receiver objects
-  returned from midi-in and midi-out."
+  "Route midi messages from a source to a sink.  Expects transmitter
+  and receiver objects returned from midi-in and midi-out."
   [source sink]
-  (.setReceiver (:transmitter source) (:receiver sink)))
+  (let [^Transmitter tran (:transmitter source)]
+    (.setReceiver tran (:receiver sink))))
 
 (def midi-shortmessage-status
   {ShortMessage/ACTIVE_SENSING :active-sensing
@@ -197,41 +193,56 @@
 ;; http://www.jsresources.org/faq_midi.html#no_note_off
 (defn midi-msg
   "Make a clojure map out of a midi object."
-  [obj]
-  {:chan (.getChannel obj)
-   :cmd  (if (and (= ShortMessage/NOTE_ON (.getCommand obj))
-                  (== 0 (.getData2 obj) 0))
-           :note-off
-           (midi-shortmessage-keys (.getCommand obj)))
-   :note (.getData1 obj)
-   :vel  (.getData2 obj)
-   :data1 (.getData1 obj)
-   :data2 (.getData2 obj)
-   :status (midi-shortmessage-keys (.getStatus obj))})
+  [^ShortMessage obj]
+  {:chan     (.getChannel obj)
+   :cmd      (if (and (= ShortMessage/NOTE_ON (.getCommand obj))
+                      (== 0 (.getData2 obj) 0))
+               :note-off
+               (midi-shortmessage-keys (.getCommand obj)))
+   :orig-cmd (midi-shortmessage-keys (.getCommand obj))
+   :note     (.getData1 obj)
+   :vel      (.getData2 obj)
+   :data1    (.getData1 obj)
+   :data2    (.getData2 obj)
+   :status   (midi-shortmessage-keys (.getStatus obj))})
 
 (defn midi-handle-events
-  "Specify a single handler that will receive all midi events from the input device."
+  "Specify a single handler that will receive all midi events from the
+  input device. The fn should accept two args - the message map and a
+  timestamp."
   [input fun]
-  (let [receiver (proxy [Receiver] []
-                   (close [] nil)
-                   (send [msg timestamp] (fun (midi-msg msg) timestamp)))]
-    (.setReceiver (:transmitter input) receiver)))
+  (let [receiver (reify Receiver
+                   (close [this] nil)
+                   (send [this msg timestamp] (fun (midi-msg msg) timestamp)))
+        dev (:transmitter input)]
+    (.setReceiver dev receiver)))
 
-;; NOTE: Unfortunately, it seems that either Pianoteq or the virmidi modules
-;; don't actually make use of the timestamp...
+(defn midi-send-msg
+  [^Receiver sink msg val]
+  (.send sink msg val))
+
+;; NOTE: Unfortunately, it seems that either Pianoteq or the virmidi
+;; modules don't actually make use of the timestamp...
 (defn midi-note-on
   "Send a midi on msg to the sink."
-  [sink note-num vel & [timestamp]]
+  [sink note-num vel]
   (let [on-msg  (ShortMessage.)]
     (.setMessage on-msg ShortMessage/NOTE_ON 0 note-num vel)
-    (.send (:receiver sink) on-msg -1)))
+    (midi-send-msg (:receiver sink) on-msg -1)))
 
 (defn midi-note-off
   "Send a midi off msg to the sink."
   [sink note-num]
   (let [off-msg (ShortMessage.)]
     (.setMessage off-msg ShortMessage/NOTE_OFF 0 note-num 0)
-    (.send (:receiver sink) off-msg -1)))
+    (midi-send-msg (:receiver sink) off-msg -1)))
+
+(defn midi-control
+  "Send a control msg to the sink"
+  [sink ctl-num val]
+  (let [ctl-msg (ShortMessage.)]
+    (.setMessage ctl-msg ShortMessage/CONTROL_CHANGE 0 ctl-num val)
+    (midi-send-msg (:receiver sink) ctl-msg -1)))
 
 (defn- byte-seq-to-array
   "Turn a seq of bytes into a native byte-array."
@@ -242,21 +253,23 @@
     ary))
 
 (defn midi-sysex
-  "Send a midi System Exclusive msg made up of the bytes in byte-seq to the sink."
+  "Send a midi System Exclusive msg made up of the bytes in byte-seq
+  to the sink."
   [sink byte-seq]
   (let [sys-msg (SysexMessage.)
         bytes (byte-seq-to-array byte-seq)]
     (.setMessage sys-msg bytes (count bytes))
-    (.send (:receiver sink) sys-msg -1)))
+    (midi-send-msg (:receiver sink) sys-msg -1)))
 
 (defn midi-note
   "Send a midi on/off msg pair to the sink."
   [sink note-num vel dur]
   (midi-note-on sink note-num vel)
-  (schedule #(midi-note-off sink note-num 0) dur))
+  (at-at/after dur #(midi-note-off sink note-num 0) midi-player-pool))
 
 (defn midi-play
-  "Play a seq of notes with the corresponding velocities and durations."
+  "Play a seq of notes with the corresponding velocities and
+  durations."
   [out notes velocities durations]
   (loop [notes notes
          velocities velocities
@@ -266,5 +279,5 @@
       (let [n (first notes)
             v (first velocities)
             d (first durations)]
-        (schedule #(midi-note out n v d) cur-time)
+        (at-at/after cur-time #(midi-note out n v d) midi-player-pool)
         (recur (next notes) (next velocities) (next durations) (+ cur-time d))))))
