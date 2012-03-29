@@ -221,8 +221,6 @@
   [^Receiver sink msg val]
   (.send sink msg val))
 
-;; NOTE: Unfortunately, it seems that either Pianoteq or the virmidi
-;; modules don't actually make use of the timestamp...
 (defn midi-note-on
   "Send a midi on msg to the sink."
   [sink note-num vel]
@@ -254,10 +252,13 @@
 
 (defn midi-sysex
   "Send a midi System Exclusive msg made up of the bytes in byte-seq
-  to the sink."
+  to the sink. It is also possible to specify byte-seq as a
+  byte-array."
   [sink byte-seq]
   (let [sys-msg (SysexMessage.)
-        bytes (byte-seq-to-array byte-seq)]
+        bytes (if (= (type bytes) (type (byte-array 0)))
+                bytes
+                (byte-seq-to-array (seq byte-seq)))]
     (.setMessage sys-msg bytes (count bytes))
     (midi-send-msg (:receiver sink) sys-msg -1)))
 
