@@ -15,6 +15,10 @@
      (java.util.concurrent FutureTask ScheduledThreadPoolExecutor TimeUnit))
   (:use clojure.set))
 
+; Java MIDI returns -1 when a port can support any number of transmitters or
+; receivers, we use max int.
+(def MAX-IO-PORTS Integer/MAX_VALUE)
+
 (def NUM-PLAYER-THREADS 10)
 (def midi-player-pool (ScheduledThreadPoolExecutor. NUM-PLAYER-THREADS))
 
@@ -26,17 +30,20 @@
   [fun ms-delay]
   (.schedule midi-player-pool fun (long ms-delay) TimeUnit/MILLISECONDS))
 
+
 (defn midi-devices []
   "Get all of the currently available midi devices."
   (for [info (MidiSystem/getMidiDeviceInfo)]
-    (let [device (MidiSystem/getMidiDevice info)]
+    (let [device (MidiSystem/getMidiDevice info)
+          n-tx   (.getMaxTransmitters device)
+          n-rx   (.getMaxReceivers device)]
       (with-meta
         {:name         (.getName info)
          :description  (.getDescription info)
          :vendor       (.getVendor info)
          :version      (.getVersion info)
-         :sources      (.getMaxTransmitters device)
-         :sinks        (.getMaxReceivers device)
+         :sources      (if (neg? n-tx) MAX-IO-PORTS n-tx)
+         :sinks        (if (neg? n-rx) MAX-IO-PORTS n-rx)
          :info         info
          :device       device}
         {:type :midi-device}))))
@@ -162,30 +169,30 @@
   (.setReceiver (:transmitter source) (:receiver sink)))
 
 (def midi-shortmessage-status
-  {ShortMessage/ACTIVE_SENSING :active-sensing
-   ShortMessage/CONTINUE :continue
-   ShortMessage/END_OF_EXCLUSIVE :end-of-exclusive
-   ShortMessage/MIDI_TIME_CODE :midi-time-code
-   ShortMessage/SONG_POSITION_POINTER :song-position-pointer
-   ShortMessage/SONG_SELECT :song-select
-   ShortMessage/START :start
-   ShortMessage/STOP :stop
-   ShortMessage/SYSTEM_RESET :system-reset
-   ShortMessage/TIMING_CLOCK :timing-clock
-   ShortMessage/TUNE_REQUEST :tune-request})
+  {ShortMessage/ACTIVE_SENSING         :active-sensing
+   ShortMessage/CONTINUE               :continue
+   ShortMessage/END_OF_EXCLUSIVE       :end-of-exclusive
+   ShortMessage/MIDI_TIME_CODE         :midi-time-code
+   ShortMessage/SONG_POSITION_POINTER  :song-position-pointer
+   ShortMessage/SONG_SELECT            :song-select
+   ShortMessage/START                  :start
+   ShortMessage/STOP                   :stop
+   ShortMessage/SYSTEM_RESET           :system-reset
+   ShortMessage/TIMING_CLOCK           :timing-clock
+   ShortMessage/TUNE_REQUEST           :tune-request})
 
 (def midi-sysexmessage-status
-  {SysexMessage/SYSTEM_EXCLUSIVE :system-exclusive
+  {SysexMessage/SYSTEM_EXCLUSIVE         :system-exclusive
    SysexMessage/SPECIAL_SYSTEM_EXCLUSIVE :special-system-exclusive})
 
 (def midi-shortmessage-command
   {ShortMessage/CHANNEL_PRESSURE :channel-pressure
-   ShortMessage/CONTROL_CHANGE :control-change
-   ShortMessage/NOTE_OFF :note-off
-   ShortMessage/NOTE_ON :note-on
-   ShortMessage/PITCH_BEND :pitch-bend
-   ShortMessage/POLY_PRESSURE :poly-pressure
-   ShortMessage/PROGRAM_CHANGE :program-change})
+   ShortMessage/CONTROL_CHANGE   :control-change
+   ShortMessage/NOTE_OFF         :note-off
+   ShortMessage/NOTE_ON          :note-on
+   ShortMessage/PITCH_BEND       :pitch-bend
+   ShortMessage/POLY_PRESSURE    :poly-pressure
+   ShortMessage/PROGRAM_CHANGE   :program-change})
 
 (def midi-shortmessage-keys
   (merge midi-shortmessage-status midi-shortmessage-command))
@@ -197,25 +204,35 @@
 ;; http://www.jsresources.org/faq_midi.html#no_note_off
 (defn midi-msg
   "Make a clojure map out of a midi object."
-  [obj]
-  {:chan (.getChannel obj)
-   :cmd  (if (and (= ShortMessage/NOTE_ON (.getCommand obj))
-                  (== 0 (.getData2 obj) 0))
-           :note-off
-           (midi-shortmessage-keys (.getCommand obj)))
-   :note (.getData1 obj)
-   :vel  (.getData2 obj)
-   :data1 (.getData1 obj)
-   :data2 (.getData2 obj)
-   :status (midi-shortmessage-keys (.getStatus obj))})
+  [obj & [ts]]
+  (let [ch (.getChannel obj)
+        cmd (.getCommand obj)
+        d1 (.getData1 obj)
+        d2 (.getData2 obj)
+        status (.getStatus obj)]
+  {:channel   ch
+   :command   (if (and (= ShortMessage/NOTE_ON cmd)
+                       (== 0 (.getData2 obj) 0))
+                :note-off
+                (midi-shortmessage-keys cmd))
+   :note      d1
+   :velocity  d2
+   :data1     d1
+   :data2     d2
+   :status    (midi-shortmessage-keys status)
+   :timestamp ts}))
 
 (defn midi-handle-events
-  "Specify a single handler that will receive all midi events from the input device."
+  "Specify a single handler that will receive all midi events from the input device.
+  The handler should be a function of one argument, which is a midi event map."
   [input fun]
   (let [receiver (proxy [Receiver] []
                    (close [] nil)
-                   (send [msg timestamp] (fun (midi-msg msg) timestamp)))]
-    (.setReceiver (:transmitter input) receiver)))
+                   (send [msg timestamp] (fun
+                                           (assoc (midi-msg msg timestamp)
+                                                  :device input))))]
+    (.setReceiver (:transmitter input) receiver)
+    receiver))
 
 ;; NOTE: Unfortunately, it seems that either Pianoteq or the virmidi modules
 ;; don't actually make use of the timestamp...
