@@ -240,24 +240,30 @@
 
 (defn midi-note-on
   "Send a midi on msg to the sink."
-  [sink note-num vel]
-  (let [on-msg  (ShortMessage.)]
-    (.setMessage on-msg ShortMessage/NOTE_ON 0 note-num vel)
-    (midi-send-msg (:receiver sink) on-msg -1)))
+  ([sink note-num vel]
+     (midi-note-on sink note-num vel 0))
+  ([sink note-num vel channel]
+     (let [on-msg  (ShortMessage.)]
+       (.setMessage on-msg ShortMessage/NOTE_ON channel note-num vel)
+       (midi-send-msg (:receiver sink) on-msg -1))))
 
 (defn midi-note-off
   "Send a midi off msg to the sink."
-  [sink note-num]
-  (let [off-msg (ShortMessage.)]
-    (.setMessage off-msg ShortMessage/NOTE_OFF 0 note-num 0)
-    (midi-send-msg (:receiver sink) off-msg -1)))
+  ([sink note-num]
+     (midi-note-off sink note-num 0))
+  ([sink note-num channel]
+     (let [off-msg (ShortMessage.)]
+       (.setMessage off-msg ShortMessage/NOTE_OFF channel note-num 0)
+       (midi-send-msg (:receiver sink) off-msg -1))))
 
 (defn midi-control
   "Send a control msg to the sink"
-  [sink ctl-num val]
-  (let [ctl-msg (ShortMessage.)]
-    (.setMessage ctl-msg ShortMessage/CONTROL_CHANGE 0 ctl-num val)
-    (midi-send-msg (:receiver sink) ctl-msg -1)))
+  ([sink ctl-num val]
+     (midi-control sink ctl-num val 0))
+  ([sink ctl-num val channel]
+     (let [ctl-msg (ShortMessage.)]
+       (.setMessage ctl-msg ShortMessage/CONTROL_CHANGE channel ctl-num val)
+       (midi-send-msg (:receiver sink) ctl-msg -1))))
 
 (defn- byte-seq-to-array
   "Turn a seq of bytes into a native byte-array."
@@ -281,21 +287,25 @@
 
 (defn midi-note
   "Send a midi on/off msg pair to the sink."
-  [sink note-num vel dur]
-  (midi-note-on sink note-num vel)
-  (at-at/after dur #(midi-note-off sink note-num 0) midi-player-pool))
+  ([sink note-num vel dur]
+     (midi-note sink note-num vel dur 0))
+  ([sink note-num vel dur channel]
+     (midi-note-on sink note-num vel channel)
+     (at-at/after dur #(midi-note-off sink note-num channel) midi-player-pool)))
 
 (defn midi-play
   "Play a seq of notes with the corresponding velocities and
   durations."
-  [out notes velocities durations]
-  (loop [notes notes
-         velocities velocities
-         durations durations
-         cur-time  0]
-    (if notes
-      (let [n (first notes)
-            v (first velocities)
-            d (first durations)]
-        (at-at/after cur-time #(midi-note out n v d) midi-player-pool)
-        (recur (next notes) (next velocities) (next durations) (+ cur-time d))))))
+  ([out notes velocities durations]
+     (midi-play out notes velocities durations 0))
+  ([out notes velocities durations channel]
+     (loop [notes notes
+            velocities velocities
+            durations durations
+            cur-time  0]
+       (if notes
+         (let [n (first notes)
+               v (first velocities)
+               d (first durations)]
+           (at-at/after cur-time #(midi-note out n v d channel) midi-player-pool)
+           (recur (next notes) (next velocities) (next durations) (+ cur-time d)))))))
