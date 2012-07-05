@@ -30,7 +30,9 @@
 (defn- midi-track
   [track]
   (let [size (.size track)]
-    (for [i (range size)] (midi-event (.get track i)))))
+    {:type :midi-track
+     :size size
+     :events (for [i (range size)] (midi-event (.get track i)))}))
 
 (defn midi-sequence
   [src]
@@ -58,14 +60,19 @@
      :usecs         usecs
      :properties props}))
 
+(defn- midi-src
+  [src]
+  (merge
+    (midi-info src)
+    (midi-sequence src)))
+
 (defn midi-file
   [path]
   (let [f (File. path)]
-    (merge
-      (midi-info f)
-      (midi-sequence f))))
+    (midi-src f)))
 
 (defn midi-url
   [url]
-  (midi-info (URL. url)))
+  (let [src (URL. url)]
+    (midi-src src)))
 
