@@ -201,7 +201,7 @@
 ;;
 ;; http://www.jsresources.org/faq_midi.html#no_note_off
 (defn midi-msg
-  "Make a clojure map out of a midi object."
+  "Make a clojure map out of a midi ShortMessage object."
   [^ShortMessage obj & [ts]]
   (let [ch     (.getChannel obj)
         cmd    (.getCommand obj)
