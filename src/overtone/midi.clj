@@ -227,9 +227,10 @@
   [input fun]
   (let [receiver (proxy [Receiver] []
                    (close [] nil)
-                   (send [msg timestamp] (fun
-                                           (assoc (midi-msg msg timestamp)
-                                                  :device input))))]
+                   (send [msg timestamp] (when (instance? ShortMessage msg )
+                                           (fun
+                                            (assoc (midi-msg msg timestamp)
+                                              :device input)))))]
     (.setReceiver (:transmitter input) receiver)
     receiver))
 
