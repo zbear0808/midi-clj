@@ -22,10 +22,7 @@
 ; receivers, we use max int.
 (def MAX-IO-PORTS Integer/MAX_VALUE)
 
-(def NUM-PLAYER-THREADS 10)
-
 (def midi-player-pool (at-at/mk-pool))
-
 
 (defn midi-devices []
   "Get all of the currently available midi devices."
@@ -113,7 +110,8 @@
     future-val))
 
 (defn- with-receiver
-  "Add a midi receiver to the sink device info."
+  "Add a midi receiver to the sink device info. This is a connection
+   from which the MIDI device will receive MIDI data"
   [sink-info]
   (let [^MidiDevice dev (:device sink-info)]
     (if (not (.isOpen dev))
@@ -121,7 +119,8 @@
     (assoc sink-info :receiver (.getReceiver dev))))
 
 (defn- with-transmitter
-  "Add a midi transmitter to the source info."
+  "Add a midi transmitter to the source info. This is a connection from
+   which the MIDI device will transmit MIDI data."
   [source-info]
   (let [^MidiDevice dev (:device source-info)]
     (if (not (.isOpen dev))
@@ -140,9 +139,8 @@
                   (midi-device? in) in)]
      (if source
        (with-transmitter source)
-       (do
-         (println "Did not find a matching midi input device for: " in)
-         nil)))))
+       (throw (IllegalArgumentException.
+               (str "Did not find a matching midi input device for: " in)))))))
 
 (defn midi-out
   "Open a midi output device for writing.  If no argument is given
@@ -156,9 +154,9 @@
                       (midi-device? out) out)]
            (if sink
              (with-receiver sink)
-             (do
-               (println "Did not find a matching midi output device for: " out)
-               nil)))))
+             (throw (IllegalArgumentException.
+                     (str "Did not find a matching midi output device for: " out )))))))
+
 (defn midi-route
   "Route midi messages from a source to a sink.  Expects transmitter
   and receiver objects returned from midi-in and midi-out."
@@ -222,17 +220,28 @@
    :timestamp ts}))
 
 (defn midi-handle-events
-  "Specify a single handler that will receive all midi events from the input device.
-  The handler should be a function of one argument, which is a midi event map."
-  [input fun]
-  (let [receiver (proxy [Receiver] []
-                   (close [] nil)
-                   (send [msg timestamp] (when (instance? ShortMessage msg )
-                                           (fun
-                                            (assoc (midi-msg msg timestamp)
-                                              :device input)))))]
-    (.setReceiver (:transmitter input) receiver)
-    receiver))
+  "Specify handlers that will independently receive all MIDI events and
+   sysex messages from the input device.  Both handlers should be a
+   function of one argument, which will be a map of the message
+   information"
+  ([input short-msg-fn] (midi-handle-events input short-msg-fn (fn [sysex-msg] nil)))
+  ([input short-msg-fn sysex-msg-fn]
+     (let [receiver (proxy [Receiver] []
+                      (close [] nil)
+                      (send [msg timestamp] (cond (instance? ShortMessage msg )
+                                                  (short-msg-fn
+                                                   (assoc (midi-msg msg timestamp)
+                                                     :device input))
+
+                                                  (instance? SysexMessage msg)
+                                                  (sysex-msg-fn
+                                                   {:timestamp timestamp
+                                                    :data (.getData msg)
+                                                    :status (.getStatus msg)
+                                                    :length (.getLength msg)
+                                                    :device input}))))]
+       (.setReceiver (:transmitter input) receiver)
+       receiver)))
 
 (defn midi-send-msg
   [^Receiver sink msg val]
@@ -265,52 +274,71 @@
        (.setMessage ctl-msg ShortMessage/CONTROL_CHANGE channel ctl-num val)
        (midi-send-msg (:receiver sink) ctl-msg -1))))
 
-(def hex-char-values (hash-map 
-  \0 0 \1 1 \2 2 \3 3 \4 4 \5 5 \6 6 \7 7 \8 8 \9 9 
-  \a 10 \b 11 \c 12 \d 13 \e 14 \f 15 
-  \A 10 \B 11 \C 12 \D 13 \E 14 \F 15 
-  \space \space \, \space \newline \space 
+(def hex-char-values (hash-map
+  \0 0 \1 1 \2 2 \3 3 \4 4 \5 5 \6 6 \7 7 \8 8 \9 9
+  \a 10 \b 11 \c 12 \d 13 \e 14 \f 15
+  \A 10 \B 11 \C 12 \D 13 \E 14 \F 15
+  \space \space \, \space \newline \space
   \tab \space \formfeed \space \return \space))
 
-(defn- not-space? 
-  [v] (not= \space v))
+(defn- not-space?
+  [v]  (and
+        (not= \space v)
+        (not= \newline v)
+        (not= \return v)
+        (not= \tab v)))
 
 (defn- byte-str-to-seq
-  "Turn a case-insensitive string of hex bytes into a seq.
+  "Turn a case-insensitive string of hex bytes into a seq of integers.
   Bytes can optionally be delimited by commas or whitespace"
-  [midi-str]  
-  (map #(+ (* 16 (first %)) (second %))
-    (partition-all 2 (map hex-char-values (filter not-space? (seq midi-str))))))
-   
-(defn- byte-seq-to-array 
+  [midi-str]
+  (map #(Integer. (+ (* 16 (first %)) (second %)))
+       (partition-all 2 (map hex-char-values (filter not-space? (seq midi-str))))))
+
+(defn- byte-seq-to-array
   "Turn a seq of bytes into a native byte-array of 2s-complement values."
   [bseq]
   (let [ary (byte-array (count bseq))]
     (doseq [i (range (count bseq))]
-      (aset-byte ary i (unchecked-byte(nth bseq i))))
+      (aset-byte ary i (unchecked-byte (nth bseq i))))
     ary))
 
-(defmulti midi-sysex
-  "Send a midi System Exclusive msg made up of the bytes in byte-seq
-   byte-array, or a byte-string to the sink.  The byte string must
-   only contain bytes encoded as hex values.  Commas, spaces, and other
-   whitespace is ignored"
-   (fn[sink byte-seq] (type (first byte-seq))))
-  
-(defmethod midi-sysex java.lang.Character [sink byte-seq]
-  (let [ sys-msg (SysexMessage.)
-     bytes (byte-seq-to-array (byte-str-to-seq byte-seq))]
-    (.setMessage sys-msg bytes (count bytes))
-    (midi-send-msg (:receiver sink) sys-msg -1)))
-    
-(defmethod midi-sysex :default [sink byte-seq]
-  [sink byte-seq]
-  (let [sys-msg (SysexMessage.)
-        bytes (if (= (type bytes) (type (byte-array 0)))
+(defmulti midi-mk-byte-array
+   (fn [byte-seq] (type (first byte-seq))))
+
+(defmethod midi-mk-byte-array
+  java.lang.Character
+  [byte-seq]
+  (byte-seq-to-array (byte-str-to-seq byte-seq)))
+
+(defmethod midi-mk-byte-array java.lang.Long
+  [byte-seq]
+  (byte-seq-to-array (map #(Integer. %) byte-seq)))
+
+(defmethod midi-mk-byte-array java.lang.Integer
+  [byte-seq]
+  (byte-seq-to-array (seq byte-seq)))
+
+(defmethod midi-mk-byte-array :default
+  [byte-seq]
+  (byte-seq-to-array (seq byte-seq)))
+
+(defn- midi-mk-sysex-msg [bytes]
+  (let [bytes (if (= (type bytes) (type (byte-array 0)))
                 bytes
-                (byte-seq-to-array (seq byte-seq)))]
+                (midi-mk-byte-array (seq bytes)))
+        sys-msg (SysexMessage.)]
     (.setMessage sys-msg bytes (count bytes))
-    (midi-send-msg (:receiver sink) sys-msg -1)))
+    sys-msg))
+
+(defn midi-sysex
+  "Send a midi System Exclusive msg made up of the bytes in byte-seq
+   byte-array, sequence of integers, longs or a byte-string to the sink.
+   If a byte string is specified, must only contain bytes encoded as hex
+   values.  Commas, spaces, and other whitespace is ignored"
+  [sink byte-seq]
+  (let [sysex (midi-mk-sysex-msg byte-seq)]
+    (midi-send-msg (:receiver sink) sysex -1)))
 
 (defn midi-note
   "Send a midi on/off msg pair to the sink."
