@@ -4,7 +4,7 @@
            it easier to configure midi input/output devices, route
            between devices, read/write control messages to devices,
            play notes, etc."}
-  (:import
+    (:import
      (java.util.regex Pattern)
      (javax.sound.midi Sequencer Synthesizer
                        MidiSystem MidiDevice Receiver Transmitter MidiEvent
@@ -16,7 +16,8 @@
      (java.awt.event MouseAdapter)
      (java.util.concurrent FutureTask ScheduledThreadPoolExecutor TimeUnit))
   (:use clojure.set)
-  (:require [overtone.at-at :as at-at]))
+  (:require [overtone.at-at :as at-at]
+            [clojure.pprint :refer [cl-format]]))
 
 ; Java MIDI returns -1 when a port can support any number of transmitters or
 ; receivers, we use max int.
@@ -24,8 +25,11 @@
 
 (def midi-player-pool (at-at/mk-pool))
 
-(defn midi-devices []
+(def mtc-pool (at-at/mk-pool))
+
+(defn midi-devices
   "Get all of the currently available midi devices."
+  []
   (for [^MidiDevice$Info info (MidiSystem/getMidiDeviceInfo)]
     (let [device (MidiSystem/getMidiDevice info)
           n-tx   (.getMaxTransmitters device)
@@ -40,6 +44,9 @@
          :info         info
          :device       device}
         {:type :midi-device}))))
+
+
+
 
 (defn midi-device?
   "Check whether obj is a midi device."
@@ -70,10 +77,10 @@
   as a regexp."
   [devs dev-name]
   (first (filter
-           #(let [pat (Pattern/compile dev-name Pattern/CASE_INSENSITIVE)]
-              (or (re-find pat (:name %1))
-                  (re-find pat (:description %1))))
-           devs)))
+          #(let [pat (Pattern/compile dev-name Pattern/CASE_INSENSITIVE)]
+             (or (re-find pat (:name %1))
+                 (re-find pat (:description %1))))
+          devs)))
 
 (defn- list-model
   "Create a swing list model based on a collection."
@@ -155,7 +162,7 @@
            (if sink
              (with-receiver sink)
              (throw (IllegalArgumentException.
-                     (str "Did not find a matching midi output device for: " out )))))))
+                     (str "Did not find a matching midi output device for: " out)))))))
 
 (defn midi-route
   "Route midi messages from a source to a sink.  Expects transmitter
@@ -206,18 +213,18 @@
         d1     (.getData1 obj)
         d2     (.getData2 obj)
         status (.getStatus obj)]
-  {:channel   ch
-   :command   (if (and (= ShortMessage/NOTE_ON cmd)
-                       (== 0 (.getData2 obj) 0))
-                :note-off
-                (midi-shortmessage-keys cmd))
-   :msg       obj
-   :note      d1
-   :velocity  d2
-   :data1     d1
-   :data2     d2
-   :status    (midi-shortmessage-keys status)
-   :timestamp ts}))
+    {:channel   ch
+     :command   (if (and (= ShortMessage/NOTE_ON cmd)
+                         (== 0 (.getData2 obj) 0))
+                  :note-off
+                  (midi-shortmessage-keys cmd))
+     :msg       obj
+     :note      d1
+     :velocity  d2
+     :data1     d1
+     :data2     d2
+     :status    (midi-shortmessage-keys status)
+     :timestamp ts}))
 
 (defn midi-handle-events
   "Specify handlers that will independently receive all MIDI events and
@@ -226,60 +233,60 @@
    information"
   ([input short-msg-fn] (midi-handle-events input short-msg-fn (fn [sysex-msg] nil)))
   ([input short-msg-fn sysex-msg-fn]
-     (let [receiver (proxy [Receiver] []
-                      (close [] nil)
-                      (send [msg timestamp] (cond (instance? ShortMessage msg )
-                                                  (short-msg-fn
-                                                   (assoc (midi-msg msg timestamp)
-                                                     :device input))
+   (let [receiver (proxy [Receiver] []
+                    (close [] nil)
+                    (send [msg timestamp] (cond (instance? ShortMessage msg)
+                                                (short-msg-fn
+                                                 (assoc (midi-msg msg timestamp)
+                                                        :device input))
 
-                                                  (instance? SysexMessage msg)
-                                                  (sysex-msg-fn
-                                                   {:timestamp timestamp
-                                                    :data (.getData msg)
-                                                    :status (.getStatus msg)
-                                                    :length (.getLength msg)
-                                                    :device input}))))]
-       (.setReceiver (:transmitter input) receiver)
-       receiver)))
+                                                (instance? SysexMessage msg)
+                                                (sysex-msg-fn
+                                                 {:timestamp timestamp
+                                                  :data (.getData msg)
+                                                  :status (.getStatus msg)
+                                                  :length (.getLength msg)
+                                                  :device input}))))]
+     (.setReceiver (:transmitter input) receiver)
+     receiver)))
 
 (defn midi-send-msg
-  [^Receiver sink msg val]
-  (.send sink msg val))
+  [^Receiver sink msg timestamp]
+  (.send sink msg timestamp))
 
 (defn midi-note-on
   "Send a midi on msg to the sink."
   ([sink note-num vel]
-     (midi-note-on sink note-num vel 0))
+   (midi-note-on sink note-num vel 0))
   ([sink note-num vel channel]
-     (let [on-msg  (ShortMessage.)]
-       (.setMessage on-msg ShortMessage/NOTE_ON channel note-num vel)
-       (midi-send-msg (:receiver sink) on-msg -1))))
+   (let [on-msg  (ShortMessage.)]
+     (.setMessage on-msg ShortMessage/NOTE_ON channel note-num vel)
+     (midi-send-msg (:receiver sink) on-msg -1))))
 
 (defn midi-note-off
   "Send a midi off msg to the sink."
   ([sink note-num]
-     (midi-note-off sink note-num 0))
+   (midi-note-off sink note-num 0))
   ([sink note-num channel]
-     (let [off-msg (ShortMessage.)]
-       (.setMessage off-msg ShortMessage/NOTE_OFF channel note-num 0)
-       (midi-send-msg (:receiver sink) off-msg -1))))
+   (let [off-msg (ShortMessage.)]
+     (.setMessage off-msg ShortMessage/NOTE_OFF channel note-num 0)
+     (midi-send-msg (:receiver sink) off-msg -1))))
 
 (defn midi-control
   "Send a control msg to the sink"
   ([sink ctl-num val]
-     (midi-control sink ctl-num val 0))
+   (midi-control sink ctl-num val 0))
   ([sink ctl-num val channel]
-     (let [ctl-msg (ShortMessage.)]
-       (.setMessage ctl-msg ShortMessage/CONTROL_CHANGE channel ctl-num val)
-       (midi-send-msg (:receiver sink) ctl-msg -1))))
+   (let [ctl-msg (ShortMessage.)]
+     (.setMessage ctl-msg ShortMessage/CONTROL_CHANGE channel ctl-num val)
+     (midi-send-msg (:receiver sink) ctl-msg -1))))
 
 (def hex-char-values (hash-map
-  \0 0 \1 1 \2 2 \3 3 \4 4 \5 5 \6 6 \7 7 \8 8 \9 9
-  \a 10 \b 11 \c 12 \d 13 \e 14 \f 15
-  \A 10 \B 11 \C 12 \D 13 \E 14 \F 15
-  \space \space \, \space \newline \space
-  \tab \space \formfeed \space \return \space))
+                      \0 0 \1 1 \2 2 \3 3 \4 4 \5 5 \6 6 \7 7 \8 8 \9 9
+                      \a 10 \b 11 \c 12 \d 13 \e 14 \f 15
+                      \A 10 \B 11 \C 12 \D 13 \E 14 \F 15
+                      \space \space \, \space \newline \space
+                      \tab \space \formfeed \space \return \space))
 
 (defn- not-space?
   [v]  (and
@@ -304,7 +311,7 @@
     ary))
 
 (defmulti midi-mk-byte-array
-   (fn [byte-seq] (type (first byte-seq))))
+  (fn [byte-seq] (type (first byte-seq))))
 
 (defmethod midi-mk-byte-array
   java.lang.Character
@@ -343,24 +350,232 @@
 (defn midi-note
   "Send a midi on/off msg pair to the sink."
   ([sink note-num vel dur]
-     (midi-note sink note-num vel dur 0))
+   (midi-note sink note-num vel dur 0))
   ([sink note-num vel dur channel]
-     (midi-note-on sink note-num vel channel)
-     (at-at/after dur #(midi-note-off sink note-num channel) midi-player-pool)))
+   (midi-note-on sink note-num vel channel)
+   (at-at/after dur #(midi-note-off sink note-num channel) midi-player-pool)))
 
 (defn midi-play
   "Play a seq of notes with the corresponding velocities and
   durations."
   ([out notes velocities durations]
-     (midi-play out notes velocities durations 0))
+   (midi-play out notes velocities durations 0))
   ([out notes velocities durations channel]
-     (loop [notes notes
-            velocities velocities
-            durations durations
-            cur-time  0]
-       (if notes
-         (let [n (first notes)
-               v (first velocities)
-               d (first durations)]
-           (at-at/after cur-time #(midi-note out n v d channel) midi-player-pool)
-           (recur (next notes) (next velocities) (next durations) (+ cur-time d)))))))
+   (loop [notes notes
+          velocities velocities
+          durations durations
+          cur-time  0]
+     (if notes
+       (let [n (first notes)
+             v (first velocities)
+             d (first durations)]
+         (at-at/after cur-time #(midi-note out n v d channel) midi-player-pool)
+         (recur (next notes) (next velocities) (next durations) (+ cur-time d)))))))
+
+
+
+;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
+;; MTC Generation Functions
+
+
+
+
+(defn send-mtc-full-frame
+  "Sends a full frame MTC message to the given sink."
+  [sink hours minutes seconds frames]
+  (->> [0xF0 ; Sysex start
+        0x7F ; Non-Realtime Sysex ID
+        0x7F ; Manufacturer Specific (General)
+        0x01 ; MTC Full Message
+        0x01 ; Example data unchecked-byte
+        (bit-or 2r01100000 hours)  ; framerate 30 fps and Hours
+        minutes   ; Minutes
+        seconds   ; Seconds
+        frames   ; Frames
+        0xF7]
+       (map unchecked-byte)
+       (byte-array)
+       (midi-sysex sink ))
+  )
+
+(defn send-mtc-quarter-frame
+  "Sends a single quarter frame MTC message to the given sink."
+  [sink piece-number half-byte]
+  (let [mtc-byte (-> piece-number
+                     (unchecked-byte)
+                     (bit-shift-left 4)
+                     (bit-or half-byte)
+                     (unchecked-byte))
+       
+        short-msg (ShortMessage. ShortMessage/MIDI_TIME_CODE mtc-byte -1 ) ; the 2nd byte '0' is ignored
+        ]
+
+    (midi-send-msg (:receiver sink) short-msg -1)))
+
+(defn send-mtc-quarter-frame-sequence
+  "Sends a complete sequence of quarter frame MTC messages."
+  [sink hours minutes seconds frames ]
+  (send-mtc-quarter-frame sink 0 
+                          (-> frames
+                              unchecked-byte
+                              (bit-and 2r1111 ) 
+                              (unchecked-byte)) )
+  (send-mtc-quarter-frame sink 1 
+                          (-> frames
+                              (unchecked-byte)
+                              (bit-shift-right 4)
+                              (bit-and 2r0001) 
+                              (unchecked-byte)) 
+                          )
+  (send-mtc-quarter-frame sink 2 
+                          (-> seconds
+                              unchecked-byte
+                              (bit-and 2r1111)
+                              (unchecked-byte)))
+  (send-mtc-quarter-frame sink 3 
+                          (-> seconds
+                              (unchecked-byte)
+                              (bit-shift-right 4)
+                              (bit-and 2r0011)
+                              (unchecked-byte)))
+  (send-mtc-quarter-frame sink 4 
+                          (-> minutes
+                              unchecked-byte
+                              (bit-and 2r1111)
+                              (unchecked-byte)))
+  (send-mtc-quarter-frame sink 5 
+                          (-> minutes
+                              (unchecked-byte)
+                              (bit-shift-right 4)
+                              (bit-and 2r0011)
+                              (unchecked-byte)))
+  (send-mtc-quarter-frame sink 6 
+                          (-> hours
+                              unchecked-byte
+                              (bit-and 2r1111)
+                              (unchecked-byte)))
+  (send-mtc-quarter-frame sink 7 
+                          (-> hours
+                              (unchecked-byte)
+                              (bit-shift-right 4)
+                              (bit-and 2r0001)
+                              (bit-or  2r0110) ; 30 fps =  0110, 24 fps = 0000, 25 fps = 0010, 29.97 fps = 0100
+                              (unchecked-byte))))
+(defn get-part-send-fn
+  [sink hours minutes seconds frames part-number]
+  (let [part-to-half-byte {0 (-> frames
+                                 (unchecked-byte)
+                                 (bit-and 2r1111)
+                                 (unchecked-byte))
+                           1 (-> frames
+                                 (unchecked-byte)
+                                 (bit-shift-right 4)
+                                 (bit-and 2r0001)
+                                 (unchecked-byte))
+                           2 (-> seconds
+                                 unchecked-byte
+                                 (bit-and 2r1111)
+                                 (unchecked-byte))
+                           3 (-> seconds
+                                 (unchecked-byte)
+                                 (bit-shift-right 4)
+                                 (bit-and 2r0011)
+                                 (unchecked-byte))
+                           4 (-> minutes
+                                 unchecked-byte
+                                 (bit-and 2r1111)
+                                 (unchecked-byte))
+                           5 (-> minutes
+                                 (unchecked-byte)
+                                 (bit-shift-right 4)
+                                 (bit-and 2r0011)
+                                 (unchecked-byte))
+                           6 (-> hours
+                                 unchecked-byte
+                                 (bit-and 2r1111)
+                                 (unchecked-byte))
+                           7 (-> hours
+                                 (unchecked-byte)
+                                 (bit-shift-right 4)
+                                 (bit-and 2r0001)
+                                 (bit-or  2r0110) ; 30 fps =  0110, 24 fps = 0000, 25 fps = 0010, 29.97 fps = 0100
+                                 (unchecked-byte))}
+        half-byte (-> part-number part-to-half-byte unchecked-byte)]
+    
+    #(send-mtc-quarter-frame sink part-number half-byte)))
+(defn milliseconds-to-timecode
+  [milliseconds fps]
+  (let [ms-per-second 1000
+        ms-per-minute (* 60 ms-per-second)
+        ms-per-hour (* 60 ms-per-minute)
+        ms-per-frame (/ ms-per-second fps)
+
+        hours (quot milliseconds ms-per-hour)
+        milliseconds (mod milliseconds ms-per-hour)
+
+        minutes (quot milliseconds ms-per-minute)
+        milliseconds (mod milliseconds ms-per-minute)
+
+        seconds (quot milliseconds ms-per-second)
+        milliseconds (mod milliseconds ms-per-second)
+
+        frames (quot milliseconds ms-per-frame)]
+
+   [hours minutes seconds frames]))
+
+(def !vars 
+  (atom {:speed-multiplier 1
+         :curr-millis 10000000
+         :part-number 0
+         :fps 30
+         :paused? false}))
+
+(defn start-mtc-sequence
+  "Starts sending the MTC quarter frame sequence repeatedly. 
+   returns RecurringJob"
+  [sink interval-ms]
+  (let [{:keys [fps speed-multiplier curr-millis paused?]} @!vars
+        _ (prn "vars" @!vars)
+        _ (prn fps speed-multiplier curr-millis paused?)
+        update-timecode (fn []
+                          (prn "this fn is running apparently ")
+                          (let [{:keys [fps speed-multiplier curr-millis paused?]} @!vars
+                                [hours minutes seconds frames] (milliseconds-to-timecode curr-millis fps)]
+                            (prn "updating timecode")
+                            (when-not false #_paused?
+
+                              (send-mtc-quarter-frame-sequence sink hours minutes seconds frames)
+                              (swap! !vars update :curr-millis + (* interval-ms speed-multiplier)))))]
+    ;; Send the full frame message initially
+    (let [[hours minutes seconds frames] (milliseconds-to-timecode curr-millis fps)]
+      (send-mtc-full-frame sink hours minutes seconds frames))
+    ;; Schedule the quarter frame sequence to be sent repeatedly
+    (at-at/every interval-ms update-timecode mtc-pool)))
+
+(comment
+  *3
+  (vec
+   (midi-devices))
+
+  (-> (midi-out "mtc")
+      (send-mtc-full-frame  0 1 3 20 )
+      #_(.send 0 0))
+  
+  (-> (midi-out "mtc") 
+      (send-mtc-quarter-frame-sequence 3 2 3 4  ))
+  
+  (def recurring-job
+    (-> (midi-out "mtc")
+        (start-mtc-sequence 100)))
+  
+  
+
+  (at-at/kill recurring-job)
+
+  (at-at/stop-and-reset-pool! midi-player-pool)
+  
+  (swap! !vars assoc :speed-multiplier 2)
+
+  (swap! !vars assoc :curr-millis 0)
+  
+  )

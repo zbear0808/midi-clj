@@ -15,3 +15,8 @@ native
 .DS_Store
 pom.xml
 *.jar
+.clj-kondo/*
+target/*
+.lsp/*
+.nrepl-port
+.calva/*
