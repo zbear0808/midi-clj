@@ -7,15 +7,13 @@
     (:import
      (java.util.regex Pattern)
      (javax.sound.midi Sequencer Synthesizer
-                       MidiSystem MidiDevice Receiver Transmitter MidiEvent
-                       MidiMessage ShortMessage SysexMessage
-                       InvalidMidiDataException MidiUnavailableException
+                       MidiSystem MidiDevice Receiver Transmitter 
+                       ShortMessage SysexMessage 
                        MidiDevice$Info)
      (javax.swing JFrame JScrollPane JList
                   DefaultListModel ListSelectionModel)
      (java.awt.event MouseAdapter)
-     (java.util.concurrent FutureTask ScheduledThreadPoolExecutor TimeUnit))
-  (:use clojure.set)
+     (java.util.concurrent FutureTask )) 
   (:require [overtone.at-at :as at-at]
             [clojure.pprint :refer [cl-format]]))
 
@@ -61,8 +59,9 @@
                 (not (instance? Synthesizer (:device %1))))
           (midi-devices)))
 
-(defn midi-sources []
+(defn midi-sources 
   "Get the midi input sources."
+  [] 
   (filter #(not (zero? (:sources %1))) (midi-ports)))
 
 (defn midi-sinks
@@ -121,7 +120,7 @@
    from which the MIDI device will receive MIDI data"
   [sink-info]
   (let [^MidiDevice dev (:device sink-info)]
-    (if (not (.isOpen dev))
+    (when (not (.isOpen dev))
       (.open dev))
     (assoc sink-info :receiver (.getReceiver dev))))
 
@@ -365,7 +364,7 @@
           velocities velocities
           durations durations
           cur-time  0]
-     (if notes
+     (when notes
        (let [n (first notes)
              v (first velocities)
              d (first durations)]
@@ -374,32 +373,37 @@
 
 
 
-;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
 ;; MTC Generation Functions
 
-
-
+(def fps->bits
+  {24 2r00
+   25 2r01
+   29.97 2r10
+   30 2r11})
 
 (defn send-mtc-full-frame
   "Sends a full frame MTC message to the given sink."
-  [sink hours minutes seconds frames]
+  [sink hours minutes seconds frames fps]
   (->> [0xF0 ; Sysex start
         0x7F ; Non-Realtime Sysex ID
         0x7F ; Manufacturer Specific (General)
         0x01 ; MTC Full Message
         0x01 ; Example data unchecked-byte
-        (bit-or 2r01100000 hours)  ; framerate 30 fps and Hours
+        (-> fps
+            (fps->bits)
+            (bit-shift-left 5)
+            (bit-or  #_2r01100000 hours))  ; framerate 30 fps and Hours
         minutes   ; Minutes
         seconds   ; Seconds
         frames   ; Frames
         0xF7]
        (map unchecked-byte)
        (byte-array)
-       (midi-sysex sink ))
-  )
+       (midi-sysex sink)))
 
 (defn send-mtc-quarter-frame
-  "Sends a single quarter frame MTC message to the given sink."
+  "Sends a single quarter frame MTC message to the given sink.
+  NOTE, this code takes too long to execute, it should be optimized, but idk how"
   [sink piece-number half-byte]
   (let [mtc-byte (-> piece-number
                      (unchecked-byte)
@@ -461,48 +465,44 @@
                               (bit-and 2r0001)
                               (bit-or  2r0110) ; 30 fps =  0110, 24 fps = 0000, 25 fps = 0010, 29.97 fps = 0100
                               (unchecked-byte))))
-(defn get-part-send-fn
-  [sink hours minutes seconds frames part-number]
+
+
+(defn send-part
+  [sink hours minutes seconds frames part-number fps]
   (let [part-to-half-byte {0 (-> frames
                                  (unchecked-byte)
-                                 (bit-and 2r1111)
-                                 (unchecked-byte))
+                                 (bit-and 2r1111))
                            1 (-> frames
                                  (unchecked-byte)
                                  (bit-shift-right 4)
-                                 (bit-and 2r0001)
-                                 (unchecked-byte))
+                                 (bit-and 2r0001))
                            2 (-> seconds
                                  unchecked-byte
-                                 (bit-and 2r1111)
-                                 (unchecked-byte))
+                                 (bit-and 2r1111))
                            3 (-> seconds
                                  (unchecked-byte)
                                  (bit-shift-right 4)
-                                 (bit-and 2r0011)
-                                 (unchecked-byte))
+                                 (bit-and 2r0011))
                            4 (-> minutes
-                                 unchecked-byte
-                                 (bit-and 2r1111)
-                                 (unchecked-byte))
+                                 (unchecked-byte)
+                                 (bit-and 2r1111))
                            5 (-> minutes
                                  (unchecked-byte)
                                  (bit-shift-right 4)
-                                 (bit-and 2r0011)
-                                 (unchecked-byte))
+                                 (bit-and 2r0011))
                            6 (-> hours
                                  unchecked-byte
-                                 (bit-and 2r1111)
-                                 (unchecked-byte))
+                                 (bit-and 2r1111))
                            7 (-> hours
                                  (unchecked-byte)
                                  (bit-shift-right 4)
                                  (bit-and 2r0001)
-                                 (bit-or  2r0110) ; 30 fps =  0110, 24 fps = 0000, 25 fps = 0010, 29.97 fps = 0100
-                                 (unchecked-byte))}
-        half-byte (-> part-number part-to-half-byte unchecked-byte)]
+                                 (bit-or  (bit-shift-left (fps->bits fps) 1) #_2r0110))}]
+    (->> part-number
+         (part-to-half-byte)
+         (unchecked-byte)
+         (send-mtc-quarter-frame sink part-number))))
     
-    #(send-mtc-quarter-frame sink part-number half-byte)))
 (defn milliseconds-to-timecode
   [milliseconds fps]
   (let [ms-per-second 1000
@@ -523,59 +523,56 @@
 
    [hours minutes seconds frames]))
 
-(def !vars 
+(def !vars
+  "There is a single var for the timecode, this is bc generally there should only be 1 device reading the timecode
+So we'll have this atom dynamically change. Instead of having a separate atom for each CDJ's timecode" 
   (atom {:speed-multiplier 1
-         :curr-millis 10000000
-         :part-number 0
+         :base-millis 0 
+         :steps 0 ; this should get reset when the base-millis is repositioned
+         :recurring-job nil
          :fps 30
          :paused? false}))
 
-(defn start-mtc-sequence
-  "Starts sending the MTC quarter frame sequence repeatedly. 
-   returns RecurringJob"
-  [sink interval-ms]
-  (let [{:keys [fps speed-multiplier curr-millis paused?]} @!vars
+(defn start-mtc
+  "Starts sending the MTC full frame message repeatedly. 
+   updates `RecurringJob` at `:recurring-job` key in `!vars` that can be killed with `at-at/kill`"
+  [sink]
+  (let [{:keys [recurring-job]} @!vars
+        step-size-ms 20 ;vibes based 16ms is 60fps, so this prob works #_(int (/ 1000 fps 4)) ; 4 is due to quarter frame messages 
         _ (prn "vars" @!vars)
-        _ (prn fps speed-multiplier curr-millis paused?)
-        update-timecode (fn []
-                          (prn "this fn is running apparently ")
-                          (let [{:keys [fps speed-multiplier curr-millis paused?]} @!vars
-                                [hours minutes seconds frames] (milliseconds-to-timecode curr-millis fps)]
-                            (prn "updating timecode")
-                            (when-not false #_paused?
+        update-timecode! (fn []
+                           (let [{:keys [steps paused? fps speed-multiplier base-millis]} @!vars
+                                 curr-millis (-> (* steps step-size-ms speed-multiplier)
+                                                 (+ base-millis)
+                                                 (int))
+                                 [hours minutes seconds frames] (milliseconds-to-timecode curr-millis fps)]
+                             (when-not paused?
+                               (send-mtc-full-frame sink hours minutes seconds frames fps)
+                               (swap! !vars update :steps inc))))]
+    (when recurring-job
+      (at-at/kill recurring-job))
 
-                              (send-mtc-quarter-frame-sequence sink hours minutes seconds frames)
-                              (swap! !vars update :curr-millis + (* interval-ms speed-multiplier)))))]
-    ;; Send the full frame message initially
-    (let [[hours minutes seconds frames] (milliseconds-to-timecode curr-millis fps)]
-      (send-mtc-full-frame sink hours minutes seconds frames))
-    ;; Schedule the quarter frame sequence to be sent repeatedly
-    (at-at/every interval-ms update-timecode mtc-pool)))
+    (swap! !vars assoc :recurring-job (at-at/every step-size-ms update-timecode! mtc-pool))))
+
 
 (comment
-  *3
-  (vec
-   (midi-devices))
-
-  (-> (midi-out "mtc")
-      (send-mtc-full-frame  0 1 3 20 )
-      #_(.send 0 0))
-  
-  (-> (midi-out "mtc") 
-      (send-mtc-quarter-frame-sequence 3 2 3 4  ))
-  
-  (def recurring-job
-    (-> (midi-out "mtc")
-        (start-mtc-sequence 100)))
-  
   
 
-  (at-at/kill recurring-job)
+  (time (-> (midi-out "mtc")
+            (start-mtc)))
 
-  (at-at/stop-and-reset-pool! midi-player-pool)
-  
+  (swap! !vars assoc
+         :speed-multiplier 2
+         :base-millis 10000
+         :steps 0)
+
+  (swap! !vars assoc
+         :speed-multiplier 0.5)
+ 
+  (at-at/stop-and-reset-pool! mtc-pool)
+
   (swap! !vars assoc :speed-multiplier 2)
 
   (swap! !vars assoc :curr-millis 0)
-  
+
   )
