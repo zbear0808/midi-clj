@@ -3,15 +3,14 @@
 
 #### A streamlined midi API for Clojure
 
-midi-clj is being developed for Project Overtone, and it is meant to simplify
-the usage of midi devices and the midi system from within Clojure.
+midi-clj is forked from Project Overtone, and it is meant to simplify the code and add features
+
+Mainly Midi Timecode support. This creates an exposed atom called `!vars` which contains current time information
+
+I've also made the decision to remove all Java UI elements from this library, as I believe that any UI should exist outside of this library
+
 
     (use 'midi)
-
-    ; Select midi input and output devices
-    ; These functions bring up a GUI chooser window to select a midi port
-    (def keyboard (midi-in))
-    (def phat-synth (midi-out))
 
     ; Once you know the correct device names for your devices you can save the
     ; step of opening up the GUI chooser by putting a unique part of the name
@@ -33,33 +32,20 @@ the usage of midi devices and the midi system from within Clojure.
     ; And the same thing with a sequence of notes
     (midi-play phat-synth [40 47 40] [80 50 110] [250 500 250])
 
-In Ubuntu Linux I use the snd-virmidi kernel module to provide software midi
-ports.  USB midi devices should be pretty much plug and play.
 
 
 ### Project Info:
 
-Include in your project.clj like so:
-
-  [overtone/midi-clj "0.1"]
+I have not uploaded this fork anywhere yet, so it cannot just be added to yout `deps.edn` file or `project.clj`
 
 #### Source Repository
 Downloads and the source repository can be found on GitHub:
 
-  http://github.com/overtone/midi-clj
+  http://github.com/zbear0808/midi-clj
 
-Eventually there will be more documentation for this library, but in the
-meantime you can see it in use within the context of Project Overtone, located
-here:
 
-  http://github.com/overtone/overtone
-
-#### Mailing List
-
-For any questions, comments or patches, use the Overtone google group here:
-
-http://groups.google.com/group/overtone
 
 ### Authors
 
 * Jeff Rose
+* Zubair Ahmed
