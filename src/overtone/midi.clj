@@ -9,12 +9,10 @@
      (javax.sound.midi Sequencer Synthesizer
                        MidiSystem MidiDevice Receiver Transmitter 
                        ShortMessage SysexMessage 
-                       MidiDevice$Info)
-     (javax.swing JFrame JScrollPane JList
-                  DefaultListModel ListSelectionModel)
-     (java.awt.event MouseAdapter)
+                       MidiDevice$Info) 
      (java.util.concurrent FutureTask )) 
   (:require [overtone.at-at :as at-at]
+            [clojure.string :as str]
             [clojure.pprint :refer [cl-format]]))
 
 ; Java MIDI returns -1 when a port can support any number of transmitters or
@@ -81,40 +79,6 @@
                  (re-find pat (:description %1))))
           devs)))
 
-(defn- list-model
-  "Create a swing list model based on a collection."
-  [items]
-  (let [model (DefaultListModel.)]
-    (doseq [item items]
-      (.addElement model item))
-    model))
-
-(defn- midi-port-chooser
-  "Brings up a GUI list of the provided midi ports and then calls
-  handler with the port that was double clicked."
-  [title ports]
-  (let [frame   (JFrame. title)
-        model   (list-model (for [port ports]
-                              (str (:name port) " - " (:description port))))
-        options (JList. model)
-        pane    (JScrollPane. options)
-        future-val (FutureTask. #(nth ports (.getSelectedIndex options)))
-        listener (proxy [MouseAdapter] []
-                   (mouseClicked
-                     [event]
-                     (if (= (.getClickCount event) 2)
-                       (.setVisible frame false)
-                       (.run future-val))))]
-    (doto options
-      (.addMouseListener listener)
-      (.setSelectionMode ListSelectionModel/SINGLE_SELECTION))
-    (doto frame
-      (.add pane)
-      (.pack)
-      (.setSize 400 600)
-      (.setVisible true))
-    future-val))
-
 (defn- with-receiver
   "Add a midi receiver to the sink device info. This is a connection
    from which the MIDI device will receive MIDI data"
@@ -137,31 +101,26 @@
   "Open a midi input device for reading.  If no argument is given then
   a selection list pops up to let you browse and select the midi
   device."
-  ([] (with-transmitter
-        (.get (midi-port-chooser "Midi Input Selector" (midi-sources)))))
-  ([in]
-   (let [source (cond
-                  (string? in) (midi-find-device (midi-sources) in)
-                  (midi-device? in) in)]
-     (if source
-       (with-transmitter source)
-       (throw (IllegalArgumentException.
-               (str "Did not find a matching midi input device for: " in)))))))
+  [in]
+  (let [source (cond
+                 (string? in) (midi-find-device (midi-sources) in)
+                 (midi-device? in) in)]
+    (if source
+      (with-transmitter source)
+      (throw (IllegalArgumentException.
+              (str "Did not find a matching midi input device for: " in))))))
 
 (defn midi-out
   "Open a midi output device for writing.  If no argument is given
   then a selection list pops up to let you browse and select the midi
   device."
-  ([] (with-receiver
-        (.get (midi-port-chooser "Midi Output Selector" (midi-sinks)))))
-
-  ([out] (let [sink (cond
-                      (string? out) (midi-find-device (midi-sinks) out)
-                      (midi-device? out) out)]
-           (if sink
-             (with-receiver sink)
-             (throw (IllegalArgumentException.
-                     (str "Did not find a matching midi output device for: " out)))))))
+  [out]
+  (if-let [sink (cond
+                  (string? out) (midi-find-device (midi-sinks) out)
+                  (midi-device? out) out)]
+    (with-receiver sink)
+    (throw (IllegalArgumentException.
+            (str "Did not find a matching midi output device for: " out)))))
 
 (defn midi-route
   "Route midi messages from a source to a sink.  Expects transmitter
@@ -287,19 +246,16 @@
                       \space \space \, \space \newline \space
                       \tab \space \formfeed \space \return \space))
 
-(defn- not-space?
-  [v]  (and
-        (not= \space v)
-        (not= \newline v)
-        (not= \return v)
-        (not= \tab v)))
-
 (defn- byte-str-to-seq
   "Turn a case-insensitive string of hex bytes into a seq of integers.
   Bytes can optionally be delimited by commas or whitespace"
   [midi-str]
-  (map #(Integer. (+ (* 16 (first %)) (second %)))
-       (partition-all 2 (map hex-char-values (filter not-space? (seq midi-str))))))
+  
+  (->> (seq midi-str)
+       (remove str/blank?)
+       (map hex-char-values)
+       (partition-all 2)
+       (map #(Integer. (+ (* 16 (first %)) (second %))))))
 
 (defn- byte-seq-to-array
   "Turn a seq of bytes into a native byte-array of 2s-complement values."
@@ -375,13 +331,13 @@
 
 ;; MTC Generation Functions
 
-(def fps->bits
-  {24 2r00
-   25 2r01
+(def ^:private fps->bits
+  {24    2r00
+   25    2r01
    29.97 2r10
-   30 2r11})
+   30    2r11})
 
-(defn send-mtc-full-frame
+(defn- send-mtc-full-frame
   "Sends a full frame MTC message to the given sink."
   [sink hours minutes seconds frames fps]
   (->> [0xF0 ; Sysex start
@@ -401,7 +357,7 @@
        (byte-array)
        (midi-sysex sink)))
 
-(defn send-mtc-quarter-frame
+(defn- send-mtc-quarter-frame
   "Sends a single quarter frame MTC message to the given sink.
   NOTE, this code takes too long to execute, it should be optimized, but idk how"
   [sink piece-number half-byte]
@@ -416,58 +372,13 @@
 
     (midi-send-msg (:receiver sink) short-msg -1)))
 
-(defn send-mtc-quarter-frame-sequence
-  "Sends a complete sequence of quarter frame MTC messages."
-  [sink hours minutes seconds frames ]
-  (send-mtc-quarter-frame sink 0 
-                          (-> frames
-                              unchecked-byte
-                              (bit-and 2r1111 ) 
-                              (unchecked-byte)) )
-  (send-mtc-quarter-frame sink 1 
-                          (-> frames
-                              (unchecked-byte)
-                              (bit-shift-right 4)
-                              (bit-and 2r0001) 
-                              (unchecked-byte)) 
-                          )
-  (send-mtc-quarter-frame sink 2 
-                          (-> seconds
-                              unchecked-byte
-                              (bit-and 2r1111)
-                              (unchecked-byte)))
-  (send-mtc-quarter-frame sink 3 
-                          (-> seconds
-                              (unchecked-byte)
-                              (bit-shift-right 4)
-                              (bit-and 2r0011)
-                              (unchecked-byte)))
-  (send-mtc-quarter-frame sink 4 
-                          (-> minutes
-                              unchecked-byte
-                              (bit-and 2r1111)
-                              (unchecked-byte)))
-  (send-mtc-quarter-frame sink 5 
-                          (-> minutes
-                              (unchecked-byte)
-                              (bit-shift-right 4)
-                              (bit-and 2r0011)
-                              (unchecked-byte)))
-  (send-mtc-quarter-frame sink 6 
-                          (-> hours
-                              unchecked-byte
-                              (bit-and 2r1111)
-                              (unchecked-byte)))
-  (send-mtc-quarter-frame sink 7 
-                          (-> hours
-                              (unchecked-byte)
-                              (bit-shift-right 4)
-                              (bit-and 2r0001)
-                              (bit-or  2r0110) ; 30 fps =  0110, 24 fps = 0000, 25 fps = 0010, 29.97 fps = 0100
-                              (unchecked-byte))))
 
 
-(defn send-part
+(defn- send-part
+  "DO NOT USE, This is really slow, 
+   It's just implemented to show how the MTC spec can be implemented, 
+   idk if I can optimize this to make it usable. 
+   Sends a singe part of the MTC quarter frame sequence "
   [sink hours minutes seconds frames part-number fps]
   (let [part-to-half-byte {0 (-> frames
                                  (unchecked-byte)
@@ -510,7 +421,8 @@
         ms-per-hour (* 60 ms-per-minute)
         ms-per-frame (/ ms-per-second fps)
 
-        hours (quot milliseconds ms-per-hour)
+        hours (-> (quot milliseconds ms-per-hour)
+                  (mod 24))
         milliseconds (mod milliseconds ms-per-hour)
 
         minutes (quot milliseconds ms-per-minute)
@@ -528,7 +440,8 @@
 So we'll have this atom dynamically change. Instead of having a separate atom for each CDJ's timecode" 
   (atom {:speed-multiplier 1
          :base-millis 0 
-         :steps 0 ; this should get reset when the base-millis is repositioned
+         :offset-millis 0
+         :steps 0 ; this MUST BE reset when the base-millis is repositioned
          :recurring-job nil
          :fps 30
          :paused? false}))
@@ -537,20 +450,23 @@ So we'll have this atom dynamically change. Instead of having a separate atom fo
   "Starts sending the MTC full frame message repeatedly. 
    updates `RecurringJob` at `:recurring-job` key in `!vars` that can be killed with `at-at/kill`"
   [sink]
-  (let [{:keys [recurring-job]} @!vars
+  (let [{:keys [recurring-job paused? base-millis offset-millis fps]} @!vars
         step-size-ms 20 ;vibes based 16ms is 60fps, so this prob works #_(int (/ 1000 fps 4)) ; 4 is due to quarter frame messages 
-        _ (prn "vars" @!vars)
+        #_ (prn "vars" @!vars)
+        [hours minutes seconds frames] (milliseconds-to-timecode (+ base-millis offset-millis) fps)
         update-timecode! (fn []
-                           (let [{:keys [steps paused? fps speed-multiplier base-millis]} @!vars
+                           (let [{:keys [steps paused? fps speed-multiplier base-millis offset-millis]} @!vars
                                  curr-millis (-> (* steps step-size-ms speed-multiplier)
                                                  (+ base-millis)
                                                  (int))
-                                 [hours minutes seconds frames] (milliseconds-to-timecode curr-millis fps)]
+                                 [hours minutes seconds frames] (milliseconds-to-timecode (+ curr-millis offset-millis) fps)]
                              (when-not paused?
                                (send-mtc-full-frame sink hours minutes seconds frames fps)
                                (swap! !vars update :steps inc))))]
     (when recurring-job
       (at-at/kill recurring-job))
+    (when paused? ; if it's starting out paused we want to send the MTC once initially
+      (send-mtc-full-frame sink hours minutes seconds frames fps))
 
     (swap! !vars assoc :recurring-job (at-at/every step-size-ms update-timecode! mtc-pool))))
 
